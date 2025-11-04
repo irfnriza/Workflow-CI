@@ -18,10 +18,10 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ env.PYTHON_VERSION }}
         
@@ -55,7 +55,7 @@ jobs:
         find MLProject/mlruns -type f -name "*.h5" -o -name "*.png"
         
     - name: Upload model artifacts to GitHub
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ml-model-artifacts
         path: |
@@ -192,7 +192,7 @@ jobs:
         cat docker-image-report.txt
         
     - name: Upload Docker Report
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: docker-build-report
         path: docker-image-report.txt
