@@ -110,32 +110,32 @@ jobs:
         
     - name: Build and Push Docker Image with MLflow
       run: |
-        cd MLProject
-        
         # Install docker if needed
         pip install docker
         
         # Get the experiment ID and run ID
-        EXPERIMENT_ID=$(ls mlruns/ | grep -v ".trash" | grep -v "models" | head -1)
+        cd MLProject
+        EXPERIMENT_ID=$(ls mlruns/ 2>/dev/null | grep -v ".trash" | grep -v "models" | head -1 || echo "")
         RUN_ID=$(ls -t mlruns/$EXPERIMENT_ID/*/meta.yaml 2>/dev/null | head -1 | cut -d'/' -f3 || echo "")
+        cd ..
         
         if [ -z "$RUN_ID" ]; then
           echo "No run ID found, creating Docker image from model directory"
           
-          # Create a simple Dockerfile
-          cat > Dockerfile <<'EOF'
+          # Create a temporary Dockerfile in MLProject directory
+          cat > MLProject/Dockerfile.temp <<'EOF'
         FROM python:3.9-slim
         
         WORKDIR /app
         
-        # Install dependencies
-        COPY requirements.txt .
+        # Copy and install dependencies
+        COPY ../requirements.txt .
         RUN pip install --no-cache-dir -r requirements.txt
         
         # Copy model and code
         COPY models/ /app/models/
         COPY modelling.py /app/
-        COPY Air\ Pollution\ Forecasting_preprocessing/ /app/Air\ Pollution\ Forecasting_preprocessing/
+        COPY "Air Pollution Forecasting_preprocessing/" /app/Air_Pollution_Forecasting_preprocessing/
         
         # Set environment variables
         ENV MLFLOW_TRACKING_URI=file:./mlruns
@@ -147,11 +147,13 @@ jobs:
         CMD ["mlflow", "models", "serve", "-m", "models/best_bilstm_model.h5", "-h", "0.0.0.0", "-p", "5000"]
         EOF
           
-          docker build -t ${{ env.DOCKER_IMAGE_NAME }}:latest .
+          # Build from root context with MLProject as build context
+          docker build -f Dockerfile -t ${{ env.DOCKER_IMAGE_NAME }}:latest .
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:latest ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
           
         else
           echo "Building Docker image using MLflow for run: $RUN_ID"
+          cd MLProject
           
           # Use mlflow models build-docker
           mlflow models build-docker \
@@ -159,6 +161,7 @@ jobs:
             -n ${{ env.DOCKER_IMAGE_NAME }}:latest \
             --enable-mlserver
           
+          cd ..
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:latest ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
         fi
         
