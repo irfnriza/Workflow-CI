@@ -1,0 +1,87 @@
+name: Docker Build Only (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      docker_tag:
+        description: 'Docker image tag'
+        required: true
+        default: 'latest'
+
+env:
+  DOCKER_IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/air-pollution-bilstm
+
+jobs:
+  build-docker:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install MLflow
+      run: |
+        pip install mlflow==2.8.0 docker==6.1.3
+        
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+      
+    - name: Login to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_TOKEN }}
+        
+    - name: Build Docker Image
+      run: |
+        cd MLProject
+        
+        # Check if MLflow model exists
+        if [ -d "mlruns" ] && [ -n "$(ls -A mlruns)" ]; then
+          echo "Found MLflow runs, building with mlflow build-docker"
+          
+          EXPERIMENT_ID=$(ls mlruns/ | grep -v ".trash" | grep -v "models" | head -1)
+          RUN_ID=$(ls -t mlruns/$EXPERIMENT_ID/*/meta.yaml 2>/dev/null | head -1 | cut -d'/' -f3 || echo "")
+          
+          if [ -n "$RUN_ID" ]; then
+            mlflow models build-docker \
+              -m "mlruns/$EXPERIMENT_ID/$RUN_ID/artifacts/model" \
+              -n ${{ env.DOCKER_IMAGE_NAME }}:${{ github.event.inputs.docker_tag }} \
+              --enable-mlserver
+          else
+            echo "No run ID found, using standard Dockerfile"
+            docker build -t ${{ env.DOCKER_IMAGE_NAME }}:${{ github.event.inputs.docker_tag }} -f ../Dockerfile ..
+          fi
+        else
+          echo "No MLflow runs found, using standard Dockerfile"
+          docker build -t ${{ env.DOCKER_IMAGE_NAME }}:${{ github.event.inputs.docker_tag }} -f ../Dockerfile ..
+        fi
+        
+    - name: Push to Docker Hub
+      run: |
+        docker push ${{ env.DOCKER_IMAGE_NAME }}:${{ github.event.inputs.docker_tag }}
+        
+        # Also tag as latest if requested tag is not 'latest'
+        if [ "${{ github.event.inputs.docker_tag }}" != "latest" ]; then
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:${{ github.event.inputs.docker_tag }} ${{ env.DOCKER_IMAGE_NAME }}:latest
+          docker push ${{ env.DOCKER_IMAGE_NAME }}:latest
+        fi
+        
+    - name: Summary
+      run: |
+        echo "## 🐳 Docker Image Built Successfully! 🐳" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Image Details" >> $GITHUB_STEP_SUMMARY
+        echo "- Repository: ${{ env.DOCKER_IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Tag: ${{ github.event.inputs.docker_tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Pull and Run" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+        echo "docker pull ${{ env.DOCKER_IMAGE_NAME }}:${{ github.event.inputs.docker_tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "docker run -p 5000:5000 ${{ env.DOCKER_IMAGE_NAME }}:${{ github.event.inputs.docker_tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

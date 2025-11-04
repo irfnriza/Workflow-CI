@@ -1,0 +1,227 @@
+name: ML Model CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Manual trigger
+
+env:
+  PYTHON_VERSION: '3.9'
+  MLFLOW_TRACKING_URI: 'file:./mlruns'
+  DOCKER_IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/air-pollution-bilstm
+
+jobs:
+  train-and-build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Verify data files
+      run: |
+        echo "Checking for data files..."
+        ls -la MLProject/Air\ Pollution\ Forecasting_preprocessing/
+        
+    - name: Train ML Model
+      run: |
+        cd MLProject
+        python modelling.py
+        
+    - name: List MLflow artifacts
+      run: |
+        echo "MLflow runs directory:"
+        ls -la MLProject/mlruns/
+        find MLProject/mlruns -type f -name "*.h5" -o -name "*.png"
+        
+    - name: Upload model artifacts to GitHub
+      uses: actions/upload-artifact@v3
+      with:
+        name: ml-model-artifacts
+        path: |
+          MLProject/mlruns/**/*
+          MLProject/models/*.h5
+          MLProject/*.png
+        retention-days: 30
+        
+    - name: Create MLflow Model Package
+      run: |
+        cd MLProject
+        # Get the latest run ID
+        RUN_ID=$(ls -t mlruns/*/*/meta.yaml | head -1 | cut -d'/' -f3)
+        echo "Latest Run ID: $RUN_ID"
+        echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
+        
+        # Create MLmodel file if not exists
+        if [ ! -f "mlruns/*/meta.yaml" ]; then
+          echo "Creating MLmodel file..."
+          mkdir -p model
+          cat > model/MLmodel <<EOF
+        artifact_path: model
+        flavors:
+          python_function:
+            env:
+              conda: conda.yaml
+              virtualenv: python_env.yaml
+            loader_module: mlflow.tensorflow
+            model_path: model
+            python_version: 3.9
+          tensorflow:
+            code: null
+            data: model
+            keras_version: 2.10.0
+            model_type: keras
+            save_format: tf
+        mlflow_version: 2.8.0
+        model_uuid: $(uuidgen)
+        run_id: $RUN_ID
+        utc_time_created: '$(date -u +"%Y-%m-%d %H:%M:%S.%6N")'
+        EOF
+        fi
+        
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+      
+    - name: Login to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_TOKEN }}
+        
+    - name: Build and Push Docker Image with MLflow
+      run: |
+        cd MLProject
+        
+        # Install docker if needed
+        pip install docker
+        
+        # Get the experiment ID and run ID
+        EXPERIMENT_ID=$(ls mlruns/ | grep -v ".trash" | grep -v "models" | head -1)
+        RUN_ID=$(ls -t mlruns/$EXPERIMENT_ID/*/meta.yaml 2>/dev/null | head -1 | cut -d'/' -f3 || echo "")
+        
+        if [ -z "$RUN_ID" ]; then
+          echo "No run ID found, creating Docker image from model directory"
+          
+          # Create a simple Dockerfile
+          cat > Dockerfile <<'EOF'
+        FROM python:3.9-slim
+        
+        WORKDIR /app
+        
+        # Install dependencies
+        COPY requirements.txt .
+        RUN pip install --no-cache-dir -r requirements.txt
+        
+        # Copy model and code
+        COPY models/ /app/models/
+        COPY modelling.py /app/
+        COPY Air\ Pollution\ Forecasting_preprocessing/ /app/Air\ Pollution\ Forecasting_preprocessing/
+        
+        # Set environment variables
+        ENV MLFLOW_TRACKING_URI=file:./mlruns
+        
+        # Expose port for MLflow serving
+        EXPOSE 5000
+        
+        # Command to serve the model
+        CMD ["mlflow", "models", "serve", "-m", "models/best_bilstm_model.h5", "-h", "0.0.0.0", "-p", "5000"]
+        EOF
+          
+          docker build -t ${{ env.DOCKER_IMAGE_NAME }}:latest .
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:latest ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+          
+        else
+          echo "Building Docker image using MLflow for run: $RUN_ID"
+          
+          # Use mlflow models build-docker
+          mlflow models build-docker \
+            -m "mlruns/$EXPERIMENT_ID/$RUN_ID/artifacts/model" \
+            -n ${{ env.DOCKER_IMAGE_NAME }}:latest \
+            --enable-mlserver
+          
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:latest ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+        fi
+        
+        # Push images to Docker Hub
+        docker push ${{ env.DOCKER_IMAGE_NAME }}:latest
+        docker push ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+        
+    - name: Generate Docker Image Report
+      run: |
+        cat > docker-image-report.txt <<EOF
+        Docker Image Build Report
+        ========================
+        
+        Repository: ${{ env.DOCKER_IMAGE_NAME }}
+        Tags:
+          - latest
+          - ${{ github.sha }}
+        
+        Docker Hub URL: https://hub.docker.com/r/${{ secrets.DOCKER_USERNAME }}/air-pollution-bilstm
+        
+        Pull Command:
+        docker pull ${{ env.DOCKER_IMAGE_NAME }}:latest
+        
+        Run Command:
+        docker run -p 5000:5000 ${{ env.DOCKER_IMAGE_NAME }}:latest
+        
+        Built at: $(date -u)
+        GitHub Actions Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        EOF
+        
+        cat docker-image-report.txt
+        
+    - name: Upload Docker Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: docker-build-report
+        path: docker-image-report.txt
+        
+    - name: Create Release (on tag push)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          MLProject/models/*.h5
+          MLProject/*.png
+          docker-image-report.txt
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Summary
+      run: |
+        echo "## 🎉 ML Model CI/CD Pipeline Completed! 🎉" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📊 Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- Model artifacts uploaded to GitHub Actions" >> $GITHUB_STEP_SUMMARY
+        echo "- Docker image pushed to Docker Hub" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🐳 Docker Image" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "docker pull ${{ env.DOCKER_IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+        echo "docker run -p 5000:5000 ${{ env.DOCKER_IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔗 Links" >> $GITHUB_STEP_SUMMARY
+        echo "- [Docker Hub Image](https://hub.docker.com/r/${{ secrets.DOCKER_USERNAME }}/air-pollution-bilstm)" >> $GITHUB_STEP_SUMMARY
+        echo "- [GitHub Actions Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
