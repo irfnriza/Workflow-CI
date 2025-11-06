@@ -1,3 +1,4 @@
+
 name: ML Model CI/CD Pipeline
 
 on:
@@ -64,40 +65,57 @@ jobs:
           MLProject/*.png
         retention-days: 30
         
-    - name: Create MLflow Model Package
+    - name: Verify MLflow Run
       run: |
         cd MLProject
-        # Get the latest run ID
-        RUN_ID=$(ls -t mlruns/*/*/meta.yaml | head -1 | cut -d'/' -f3)
-        echo "Latest Run ID: $RUN_ID"
-        echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
+        echo "Verifying MLflow run directory structure..."
         
-        # Create MLmodel file if not exists
-        if [ ! -f "mlruns/*/meta.yaml" ]; then
-          echo "Creating MLmodel file..."
-          mkdir -p model
-          cat > model/MLmodel <<EOF
-        artifact_path: model
-        flavors:
-          python_function:
-            env:
-              conda: conda.yaml
-              virtualenv: python_env.yaml
-            loader_module: mlflow.tensorflow
-            model_path: model
-            python_version: 3.9
-          tensorflow:
-            code: null
-            data: model
-            keras_version: 2.10.0
-            model_type: keras
-            save_format: tf
-        mlflow_version: 2.8.0
-        model_uuid: $(uuidgen)
-        run_id: $RUN_ID
-        utc_time_created: '$(date -u +"%Y-%m-%d %H:%M:%S.%6N")'
-        EOF
+        # Check if mlruns directory exists
+        if [ ! -d "mlruns" ]; then
+          echo "ERROR: mlruns directory not found!"
+          exit 1
         fi
+        
+        # Find the latest meta.yaml file
+        LATEST_META=$(find mlruns -type f -name "meta.yaml" -not -path "*/.*" 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
+        
+        if [ -z "$LATEST_META" ]; then
+          echo "ERROR: No MLflow run found! meta.yaml file is missing."
+          echo "This suggests that modelling.py did not complete successfully or MLflow logging failed."
+          exit 1
+        fi
+        
+        echo "✓ MLflow run verified: $LATEST_META"
+        
+        # Extract and validate paths
+        EXPERIMENT_ID=$(echo "$LATEST_META" | cut -d'/' -f2)
+        RUN_ID=$(echo "$LATEST_META" | cut -d'/' -f3)
+        
+        echo "Experiment ID: $EXPERIMENT_ID"
+        echo "Run ID: $RUN_ID"
+        
+        # Verify model artifact exists
+        MODEL_ARTIFACT_PATH="mlruns/$EXPERIMENT_ID/$RUN_ID/artifacts/model"
+        if [ ! -d "$MODEL_ARTIFACT_PATH" ]; then
+          echo "ERROR: Model artifact directory not found at $MODEL_ARTIFACT_PATH"
+          echo "Available artifacts:"
+          ls -la "mlruns/$EXPERIMENT_ID/$RUN_ID/artifacts/" || echo "Artifacts directory is empty or missing"
+          exit 1
+        fi
+        
+        # Verify MLmodel file
+        if [ ! -f "$MODEL_ARTIFACT_PATH/MLmodel" ]; then
+          echo "ERROR: MLmodel descriptor file not found!"
+          echo "This file is required for MLflow model serving."
+          echo "Contents of model artifact directory:"
+          ls -la "$MODEL_ARTIFACT_PATH"
+          exit 1
+        fi
+        
+        echo "✓ Model artifact verified at: $MODEL_ARTIFACT_PATH"
+        echo "✓ MLmodel descriptor found"
+        echo ""
+        echo "MLflow run is ready for Docker image building!"
         
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
@@ -110,64 +128,88 @@ jobs:
         
     - name: Build and Push Docker Image with MLflow
       run: |
-        # Install docker if needed
-        pip install docker
-        
-        # Get the experiment ID and run ID
         cd MLProject
-        EXPERIMENT_ID=$(ls mlruns/ 2>/dev/null | grep -v ".trash" | grep -v "models" | head -1 || echo "")
-        RUN_ID=$(ls -t mlruns/$EXPERIMENT_ID/*/meta.yaml 2>/dev/null | head -1 | cut -d'/' -f3 || echo "")
-        cd ..
         
-        if [ -z "$RUN_ID" ]; then
-          echo "No run ID found, creating Docker image from model directory"
-          
-          # Create a temporary Dockerfile in MLProject directory
-          cat > MLProject/Dockerfile.temp <<'EOF'
-        FROM python:3.9-slim
+        # Robust method to find the latest MLflow run
+        echo "Searching for the latest MLflow run..."
         
-        WORKDIR /app
+        # Find all meta.yaml files, sort by modification time (newest first)
+        LATEST_META_FILE=$(find mlruns -type f -name "meta.yaml" -not -path "*/.*" 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
         
-        # Copy and install dependencies
-        COPY ../requirements.txt .
-        RUN pip install --no-cache-dir -r requirements.txt
-        
-        # Copy model and code
-        COPY models/ /app/models/
-        COPY modelling.py /app/
-        COPY "Air Pollution Forecasting_preprocessing/" /app/Air_Pollution_Forecasting_preprocessing/
-        
-        # Set environment variables
-        ENV MLFLOW_TRACKING_URI=file:./mlruns
-        
-        # Expose port for MLflow serving
-        EXPOSE 5000
-        
-        # Command to serve the model
-        CMD ["mlflow", "models", "serve", "-m", "models/best_bilstm_model.h5", "-h", "0.0.0.0", "-p", "5000"]
-        EOF
-          
-          # Build from root context with MLProject as build context
-          docker build -f Dockerfile -t ${{ env.DOCKER_IMAGE_NAME }}:latest .
-          docker tag ${{ env.DOCKER_IMAGE_NAME }}:latest ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
-          
-        else
-          echo "Building Docker image using MLflow for run: $RUN_ID"
-          cd MLProject
-          
-          # Use mlflow models build-docker
-          mlflow models build-docker \
-            -m "mlruns/$EXPERIMENT_ID/$RUN_ID/artifacts/model" \
-            -n ${{ env.DOCKER_IMAGE_NAME }}:latest \
-            --enable-mlserver
-          
-          cd ..
-          docker tag ${{ env.DOCKER_IMAGE_NAME }}:latest ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+        if [ -z "$LATEST_META_FILE" ]; then
+          echo "ERROR: No meta.yaml found in mlruns directory!"
+          echo "Directory structure:"
+          ls -la mlruns/ || echo "mlruns directory not found"
+          exit 1
         fi
         
+        echo "Latest meta.yaml found at: $LATEST_META_FILE"
+        
+        # Extract EXPERIMENT_ID and RUN_ID from the path
+        # Path format: mlruns/<EXPERIMENT_ID>/<RUN_ID>/meta.yaml
+        EXPERIMENT_ID=$(echo "$LATEST_META_FILE" | cut -d'/' -f2)
+        RUN_ID=$(echo "$LATEST_META_FILE" | cut -d'/' -f3)
+        
+        echo "Extracted EXPERIMENT_ID: $EXPERIMENT_ID"
+        echo "Extracted RUN_ID: $RUN_ID"
+        
+        # Validate that we have valid IDs
+        if [ -z "$EXPERIMENT_ID" ] || [ -z "$RUN_ID" ]; then
+          echo "ERROR: Failed to extract EXPERIMENT_ID or RUN_ID"
+          exit 1
+        fi
+        
+        # Verify the model artifact exists
+        MODEL_PATH="mlruns/$EXPERIMENT_ID/$RUN_ID/artifacts/model"
+        if [ ! -d "$MODEL_PATH" ]; then
+          echo "ERROR: Model artifact not found at $MODEL_PATH"
+          echo "Listing artifacts directory:"
+          ls -la "mlruns/$EXPERIMENT_ID/$RUN_ID/artifacts/" || echo "Artifacts directory not found"
+          exit 1
+        fi
+        
+        echo "Model artifact verified at: $MODEL_PATH"
+        
+        # Verify MLmodel file exists (required by mlflow models build-docker)
+        if [ ! -f "$MODEL_PATH/MLmodel" ]; then
+          echo "ERROR: MLmodel file not found at $MODEL_PATH/MLmodel"
+          echo "This indicates the model was not logged correctly by MLflow autolog"
+          exit 1
+        fi
+        
+        echo "MLmodel file verified"
+        echo ""
+        echo "=========================================="
+        echo "Building Docker image using MLflow"
+        echo "=========================================="
+        echo "Experiment ID: $EXPERIMENT_ID"
+        echo "Run ID: $RUN_ID"
+        echo "Model Path: $MODEL_PATH"
+        echo "=========================================="
+        echo ""
+        
+        # Build Docker image using MLflow
+        mlflow models build-docker \
+          -m "$MODEL_PATH" \
+          -n ${{ env.DOCKER_IMAGE_NAME }}:latest \
+          --enable-mlserver
+        
+        if [ $? -ne 0 ]; then
+          echo "ERROR: mlflow models build-docker failed"
+          exit 1
+        fi
+        
+        cd ..
+        
+        # Tag the image with commit SHA
+        docker tag ${{ env.DOCKER_IMAGE_NAME }}:latest ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+        
         # Push images to Docker Hub
+        echo "Pushing images to Docker Hub..."
         docker push ${{ env.DOCKER_IMAGE_NAME }}:latest
         docker push ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+        
+        echo "Docker images pushed successfully!"
         
     - name: Generate Docker Image Report
       run: |
