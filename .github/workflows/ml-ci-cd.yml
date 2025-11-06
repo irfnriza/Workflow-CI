@@ -208,11 +208,16 @@ jobs:
         # Replace openjdk-8-jdk with openjdk-11-jdk (openjdk-8 no longer available)
         sed -i 's/openjdk-8-jdk/openjdk-11-jdk/g' Dockerfile
         
-        # Remove problematic packages if they cause issues
-        # (keeping essential ones, removing optional build tools that might fail)
-        if grep -q "cmake" Dockerfile; then
-          echo "Simplifying package list to avoid apt failures..."
-          # Keep essential packages, remove build tools that might not be needed
+        # Check if Dockerfile uses git commands (for pyenv, etc)
+        if grep -q "git clone" Dockerfile || grep -q "git ls-remote" Dockerfile; then
+          echo "Detected git usage in Dockerfile - keeping git-core package"
+          # Keep git but remove other unnecessary build tools
+          sed -i 's/build-essential//' Dockerfile
+          sed -i 's/cmake//' Dockerfile
+          sed -i 's/maven//' Dockerfile
+        else
+          echo "No git usage detected - removing all build tools"
+          # Remove all build tools including git
           sed -i 's/build-essential//' Dockerfile
           sed -i 's/cmake//' Dockerfile
           sed -i 's/git-core//' Dockerfile
