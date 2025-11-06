@@ -208,6 +208,14 @@ jobs:
         # Replace openjdk-8-jdk with openjdk-11-jdk (openjdk-8 no longer available)
         sed -i 's/openjdk-8-jdk/openjdk-11-jdk/g' Dockerfile
         
+        # Fix Python 3.8 get-pip.py issue
+        # Modern get-pip.py requires Python 3.9+, but some MLflow Dockerfiles install Python 3.8
+        if grep -q "python3.8" Dockerfile && grep -q "get-pip.py" Dockerfile; then
+          echo "Detected Python 3.8 with get-pip.py - fixing pip installation URL"
+          # Replace generic get-pip.py with Python 3.8 specific version
+          sed -i 's|https://bootstrap.pypa.io/get-pip.py|https://bootstrap.pypa.io/pip/3.8/get-pip.py|g' Dockerfile
+        fi
+        
         # Check if Dockerfile uses git commands (for pyenv, etc)
         if grep -q "git clone" Dockerfile || grep -q "git ls-remote" Dockerfile; then
           echo "Detected git usage in Dockerfile - keeping git-core package"
