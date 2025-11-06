@@ -208,6 +208,15 @@ jobs:
         # Replace openjdk-8-jdk with openjdk-11-jdk (openjdk-8 no longer available)
         sed -i 's/openjdk-8-jdk/openjdk-11-jdk/g' Dockerfile
         
+        # Fix JAVA_HOME path (8 -> 11)
+        # MLflow Dockerfile sets JAVA_HOME to /usr/lib/jvm/java-8-openjdk-amd64
+        # We need to update this to java-11 after replacing the package
+        if grep -q "JAVA_HOME.*java-8-openjdk" Dockerfile; then
+          echo "Fixing JAVA_HOME path for OpenJDK 11"
+          sed -i 's|/usr/lib/jvm/java-8-openjdk-amd64|/usr/lib/jvm/java-11-openjdk-amd64|g' Dockerfile
+          sed -i 's|java-8-openjdk|java-11-openjdk|g' Dockerfile
+        fi
+        
         # Fix Python 3.8 get-pip.py issue
         # Modern get-pip.py requires Python 3.9+, but some MLflow Dockerfiles install Python 3.8
         if grep -q "python3.8" Dockerfile && grep -q "get-pip.py" Dockerfile; then
