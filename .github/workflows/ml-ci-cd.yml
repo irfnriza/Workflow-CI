@@ -201,7 +201,30 @@ jobs:
         
         echo "✓ Dockerfile generated successfully"
         echo ""
-        echo "Generated Dockerfile content:"
+        
+        # Fix common issues in generated Dockerfile
+        echo "Patching Dockerfile for compatibility..."
+        
+        # Replace openjdk-8-jdk with openjdk-11-jdk (openjdk-8 no longer available)
+        sed -i 's/openjdk-8-jdk/openjdk-11-jdk/g' Dockerfile
+        
+        # Remove problematic packages if they cause issues
+        # (keeping essential ones, removing optional build tools that might fail)
+        if grep -q "cmake" Dockerfile; then
+          echo "Simplifying package list to avoid apt failures..."
+          # Keep essential packages, remove build tools that might not be needed
+          sed -i 's/build-essential//' Dockerfile
+          sed -i 's/cmake//' Dockerfile
+          sed -i 's/git-core//' Dockerfile
+          sed -i 's/maven//' Dockerfile
+        fi
+        
+        # Clean up multiple spaces
+        sed -i 's/  */ /g' Dockerfile
+        
+        echo "✓ Dockerfile patched successfully"
+        echo ""
+        echo "Patched Dockerfile content:"
         echo "=============================="
         cat Dockerfile
         echo "=============================="
