@@ -262,6 +262,25 @@ jobs:
         # Clean up multiple spaces
         sed -i 's/  */ /g' Dockerfile
         
+        # Fix Gunicorn configuration for proper binding
+        # MLflow Dockerfile may have incorrect Gunicorn binding (127.0.0.1 or wrong port)
+        # We need to ensure it binds to 0.0.0.0:5000 for external access
+        if grep -q "gunicorn" Dockerfile; then
+          echo "✓ Detected Gunicorn usage - ensuring proper binding configuration"
+          
+          # Add environment variable for Gunicorn if not present
+          if ! grep -q "GUNICORN_CMD_ARGS" Dockerfile; then
+            # Find the line before ENTRYPOINT/CMD and add ENV
+            sed -i '/^ENTRYPOINT\|^CMD/i ENV GUNICORN_CMD_ARGS="--bind=0.0.0.0:5000 --timeout=60 --workers=1"' Dockerfile
+          fi
+          
+          # Set TensorFlow to CPU-only mode
+          if ! grep -q "CUDA_VISIBLE_DEVICES" Dockerfile; then
+            sed -i '/^ENTRYPOINT\|^CMD/i ENV CUDA_VISIBLE_DEVICES=""' Dockerfile
+            sed -i '/^ENTRYPOINT\|^CMD/i ENV TF_CPP_MIN_LOG_LEVEL="2"' Dockerfile
+          fi
+        fi
+        
         echo "✓ Dockerfile patched successfully"
         echo ""
         echo "Patched Dockerfile content:"
