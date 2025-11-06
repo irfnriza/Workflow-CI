@@ -188,28 +188,50 @@ jobs:
         echo "=========================================="
         echo ""
         
-        # Build Docker image using MLflow
-        mlflow models build-docker \
+        # Generate Dockerfile using MLflow (without building)
+        echo "Generating Dockerfile from MLflow model..."
+        mlflow models generate-dockerfile \
           -m "$MODEL_PATH" \
-          -n ${{ env.DOCKER_IMAGE_NAME }}:latest \
-          --enable-mlserver
+          -d .
         
         if [ $? -ne 0 ]; then
-          echo "ERROR: mlflow models build-docker failed"
+          echo "ERROR: Failed to generate Dockerfile"
           exit 1
         fi
+        
+        echo "✓ Dockerfile generated successfully"
+        echo ""
+        echo "Generated Dockerfile content:"
+        echo "=============================="
+        cat Dockerfile
+        echo "=============================="
+        echo ""
+        
+        # Build Docker image using Docker CLI
+        echo "Building Docker image with Docker CLI..."
+        docker build -t ${{ env.DOCKER_IMAGE_NAME }}:latest .
+        
+        if [ $? -ne 0 ]; then
+          echo "ERROR: Docker build failed"
+          exit 1
+        fi
+        
+        echo "✓ Docker image built successfully"
         
         cd ..
         
         # Tag the image with commit SHA
+        echo "Tagging image with commit SHA..."
         docker tag ${{ env.DOCKER_IMAGE_NAME }}:latest ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
         
         # Push images to Docker Hub
+        echo ""
         echo "Pushing images to Docker Hub..."
         docker push ${{ env.DOCKER_IMAGE_NAME }}:latest
         docker push ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
         
-        echo "Docker images pushed successfully!"
+        echo ""
+        echo "✓ Docker images pushed successfully!"
         
     - name: Generate Docker Image Report
       run: |
