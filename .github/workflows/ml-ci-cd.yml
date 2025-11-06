@@ -216,20 +216,38 @@ jobs:
           sed -i 's|https://bootstrap.pypa.io/get-pip.py|https://bootstrap.pypa.io/pip/3.8/get-pip.py|g' Dockerfile
         fi
         
-        # Check if Dockerfile uses git commands (for pyenv, etc)
+        # Smart removal of build tools - check actual usage
+        KEEP_GIT=false
+        KEEP_MAVEN=false
+        
+        # Check if git is used
         if grep -q "git clone" Dockerfile || grep -q "git ls-remote" Dockerfile; then
-          echo "Detected git usage in Dockerfile - keeping git-core package"
-          # Keep git but remove other unnecessary build tools
-          sed -i 's/build-essential//' Dockerfile
-          sed -i 's/cmake//' Dockerfile
+          echo "✓ Detected git usage - will keep git-core"
+          KEEP_GIT=true
+        fi
+        
+        # Check if maven is used
+        if grep -q "mvn " Dockerfile; then
+          echo "✓ Detected maven usage - will keep maven"
+          KEEP_MAVEN=true
+        fi
+        
+        # Remove unnecessary packages based on actual usage
+        sed -i 's/build-essential//' Dockerfile
+        sed -i 's/cmake//' Dockerfile
+        
+        if [ "$KEEP_GIT" = false ]; then
+          echo "✓ Removing git-core (not used)"
+          sed -i 's/git-core//' Dockerfile
+        else
+          echo "✓ Keeping git-core (used in Dockerfile)"
+        fi
+        
+        if [ "$KEEP_MAVEN" = false ]; then
+          echo "✓ Removing maven (not used)"
           sed -i 's/maven//' Dockerfile
         else
-          echo "No git usage detected - removing all build tools"
-          # Remove all build tools including git
-          sed -i 's/build-essential//' Dockerfile
-          sed -i 's/cmake//' Dockerfile
-          sed -i 's/git-core//' Dockerfile
-          sed -i 's/maven//' Dockerfile
+          echo "✓ Keeping maven (used in Dockerfile)"
         fi
         
         # Clean up multiple spaces
